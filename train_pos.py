@@ -11,6 +11,7 @@ import torch.nn.parallel
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 import torch.utils.data
+import os
 import pdb
 import pytorch3d.ops
 import numpy as np
@@ -23,10 +24,8 @@ from model_4params import CNN_nopos as CNN
 # from dataset import PointcloudPatchDataset, RandomPointcloudPatchSampler, SequentialShapeRandomPointcloudPatchSampler
 from dataset_posenc import PointcloudPatchDataset, RandomPointcloudPatchSampler, SequentialShapeRandomPointcloudPatchSampler
 
-# from torch.utils.tensorboard import SummaryWriter
-# # default `log_dir` is "runs" - we'll be more specific here
-# writer = SummaryWriter('runs/train_diff')
-# writerval = SummaryWriter('runs_val/val_diff')
+from torch.utils.tensorboard import SummaryWriter
+# default `log_dir` is "runs" - we'll be more specific here
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -83,20 +82,15 @@ def parse_arguments():
 # def loss_func(norm, init, pred):
 #     inter = torch.add(init, pred)
     # pdb.set_trace()
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+save_dir = "norms_cor_norm_MSE_nodropout_v2"
+os.makedirs(save_dir, exist_ok=True) 
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+writer = SummaryWriter('runs/norms_cor_norm_MSE_nodropout/train')
+writerval = SummaryWriter('runs/norms_cor_norm_MSE_nodropout/val')
 
-def cos_angle(v1, v2):
-    v1 = nn.functional.normalize(v1, dim=1)
-    v2 = nn.functional.normalize(v2, dim=1)
-    # pdb.set_trace()
-    return torch.bmm(v1.unsqueeze(1), v2.unsqueeze(2)).view(-1) / torch.clamp(v1.norm(2, 1) * v2.norm(2, 1), min=0.000001)
-    
-def loss_func(pred, norm):
-    # pred_norm = torch.add(init, pred)
-    loss = (1-cos_angle(pred, norm)).pow(2).mean() 
-    # pdb.set_trace()
-    return loss
+
+'''------------------------------------defining utility functions-------------------------------------'''
 
 def rms_angular_error(estimated_normals, ground_truth_normals):
     estimated_normals = F.normalize(estimated_normals, dim=1)
@@ -109,7 +103,6 @@ def rms_angular_error(estimated_normals, ground_truth_normals):
     mean_squared_diff = torch.mean(squared_diff)
     rms_angular_error = torch.sqrt(mean_squared_diff)
     return rms_angular_error.item()  
-
 
 def get_angle(a, b):
     """Angle between vectors"""
@@ -155,10 +148,11 @@ def param2norm (pred_params , ori_params, init, ori_norms, check_ori = False):
 
     return angle_diff, None, rot_norms, None
 
-
+'''------------------------------------defining train functions-------------------------------------'''
 
 def train_pcpnet(opt):
-    device = torch.device("cpu" if opt.gpu_idx < 0 else "cuda:%d" % opt.gpu_idx)
+
+    # device = torch.device("cpu" if opt.gpu_idx < 0 else "cuda:%d" % opt.gpu_idx)
     target_features = []
     pred_dim = 0
     for o in opt.outputs:
@@ -244,7 +238,7 @@ def train_pcpnet(opt):
     print(len(test_datasampler))    
     
     model = CNN()
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    # device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     print("device: ", device)
     model = model.to(device)
     # if torch.cuda.device_count() > 1:
@@ -261,7 +255,7 @@ def train_pcpnet(opt):
                 init_i.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
                 init_i.xavier_normal_(m.weight)
-                if m.bias is not None:
+                if m.bias is not None: 
                     init_i.constant_(m.bias, 0)
 
     initialize_weights(model)
@@ -269,16 +263,21 @@ def train_pcpnet(opt):
     # model.to(device)
     # optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-5)
     #sgd optim
+    mse_loss = nn.MSELoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=opt.momentum, weight_decay=1e-5)
     scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', threshold = 1e-3)
     # optimizer = torch.optim.Adam(model.parameters(), lr=3e-2)
     # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[10,15,20,25,30], gamma=0.5) # milestones in number of optimizer iterations
     tr_loss_per_epoch = []
     val_loss_per_epoch = []
+    tr_rms_per_epoch = []
+    val_rms_per_epoch = []
 
     for epoch in range(opt.nepoch):
         train_loss = []
         val_loss = []
+        train_rms = []
+        val_rms = []
         model.train()
         pbar = tqdm(train_dataloader)
         for i, (data, init, params, norms) in enumerate(pbar, 0):
@@ -291,7 +290,8 @@ def train_pcpnet(opt):
             optimizer.zero_grad()
             out = model(inputs, init)
             tr_angle_diff,_,out_norms,_ = param2norm(out, params, init, norms) #pred_params , ori_params, init, ori_norms, check_ori = False
-            loss = loss_func(out_norms, norms)
+            loss = mse_loss(out_norms, norms)
+            rms = rms_angular_error(out_norms, norms)
             # pdb.set_trace()
 
             loss.backward()
@@ -299,13 +299,7 @@ def train_pcpnet(opt):
             prev_param_values = {name: p.clone().detach() for name, p in model.named_parameters()}
 
             optimizer.step()
-            # print("max_ori: ", torch.max(norms))
-            # print("min_ori: ", torch.min(norms))
-            # print("max_pred: ", torch.max(out))             
-            # print("min_pred: ", torch.min(out))
-            # print("max_inp: ", torch.max(inputs))
-            # print("min_inp: ", torch.min(inputs))
-            # print(inputs.shape)
+
             tolerance = 1e-6  # Define a small tolerance value
             for name, p in model.named_parameters():
                 diff = torch.abs(prev_param_values[name] - p.detach())
@@ -320,12 +314,23 @@ def train_pcpnet(opt):
                 print("Data contains NaN or inf values")
                 break
 
+            if math.isnan(loss.item()) or math.isinf(loss.item()):
+                print("Loss contains NaN or inf values")
+                pdb.set_trace()
+                break
+
             train_loss.append(loss.item())
+            train_rms.append(rms)
             pbar.set_postfix(Epoch=epoch, tr_loss=loss.item())
-            pbar.set_description('IterL: {}'.format(loss.item()))
+            pbar.set_description('Iter: {}'.format(loss.item()))
 
         tot_train_loss = np.mean(train_loss)  
         tr_loss_per_epoch.append(tot_train_loss)
+        tot_train_rms = np.mean(train_rms)
+        tr_rms_per_epoch.append(tot_train_rms)
+
+        writer.add_scalar('train loss',tot_train_loss, epoch)
+        writer.add_scalar('train rms',tot_train_rms, epoch)
 
         bef_lr = optimizer.param_groups[0]['lr']
         scheduler.step(tot_train_loss)
@@ -347,16 +352,23 @@ def train_pcpnet(opt):
                 
                 out = model(inputs, init)
                 val_angle_diff,_,out_norms,_ = param2norm(out, params, init, norms)
-                loss = loss_func(out_norms, norms)
+                loss = mse_loss(out_norms, norms)
                 val_loss.append(loss.item())
+                rms = rms_angular_error(out_norms, norms)
+                val_rms.append(rms)
                 pbar1.set_postfix(Epoch=epoch, val_loss=loss.item())
                 
         tot_val_loss = np.mean(val_loss)
         val_loss_per_epoch.append(tot_val_loss)
+        tot_val_rms = np.mean(val_rms)
+        val_rms_per_epoch.append(tot_val_rms)
+
+        writerval.add_scalar('val loss',tot_val_loss, epoch)
+        writerval.add_scalar('val rms',tot_val_rms, epoch)
 
         if epoch % 10 == 0:
             EPOCH = epoch
-            PATH = "mse_6_4params_pcp_cor_norm.pt"
+            PATH = f"{save_dir}/{EPOCH}.pt"
             LOSS = tot_train_loss
 
             torch.save({
@@ -366,12 +378,15 @@ def train_pcpnet(opt):
                         'loss': LOSS,
                         'batchsize' : opt.batchSize,
                         'val_losses_so_far' : val_loss_per_epoch,
-                        'train_losses_so_far' : tr_loss_per_epoch
+                        'train_losses_so_far' : tr_loss_per_epoch,
+                        'val_rms_so_far' : val_rms_per_epoch,
+                        'train_rms_so_far' : tr_rms_per_epoch,
+                        'lr' : optimizer.param_groups[0]['lr'] 
                         }, PATH)
             print("Model saved at epoch: ", epoch)
 
-        print(f'epoch: {epoch} training loss: {tot_train_loss}, train_angle_diff: {tr_angle_diff.sum().item() / tr_angle_diff.shape[0]} , {PATH}')
-        print(f'epoch: {epoch} val loss: {tot_val_loss} val_angle_diff: {val_angle_diff.sum().item() / val_angle_diff.shape[0]}')
+        print(f'epoch: {epoch} training loss: {tot_train_loss}, train rms: {tot_train_rms} train_angle_diff (rad): {tr_angle_diff.sum().item() / tr_angle_diff.shape[0]} , {PATH}')
+        print(f'epoch: {epoch} val loss: {tot_val_loss}, val rms: {tot_val_rms} val_angle_diff (rad): {val_angle_diff.sum().item() / val_angle_diff.shape[0]}')
 
         # writer.add_scalar('train loss',tot_train_loss, epoch)
         # writerval.add_scalar('val loss',

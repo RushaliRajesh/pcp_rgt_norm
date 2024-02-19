@@ -84,8 +84,8 @@ def parse_arguments():
 # def loss_func(norm, init, pred):
 #     inter = torch.add(init, pred)
     # pdb.set_trace()
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-save_dir = "params_cor_norm_MSE_shdlr"
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+save_dir = "params_cor_norm_MSE_nodropout"
 os.makedirs(save_dir, exist_ok=True) 
 
 def get_angle(a, b):
