@@ -6,6 +6,7 @@ import sys
 import random
 import math
 import shutil
+from torchinfo import summary
 import torch
 import torch.nn.parallel
 import torch.optim as optim
@@ -20,11 +21,11 @@ from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch.nn.functional as F 
 from tqdm import tqdm
-from model_4params import CNN_pos as CNN
+from model_4params import CNN_nopos_dists as CNN
 # from dataset import PointcloudPatchDataset, RandomPointcloudPatchSampler, SequentialShapeRandomPointcloudPatchSampler
 from dataset_posenc import PointcloudPatchDataset, RandomPointcloudPatchSampler, SequentialShapeRandomPointcloudPatchSampler
 
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 # default `log_dir` is "runs" - we'll be more specific here
 
 def parse_arguments():
@@ -83,11 +84,12 @@ def parse_arguments():
 #     inter = torch.add(init, pred)
     # pdb.set_trace()
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-save_dir = "norm_pos"
+save_dir = "norms_nopos_dists"
+print("save dir: ",save_dir)
 os.makedirs(save_dir, exist_ok=True) 
 
-writer = SummaryWriter('runs/norms_cor_norm_MSE_nodropout/train')
-writerval = SummaryWriter('runs/norms_cor_norm_MSE_nodropout/val')
+# writer = SummaryWriter('runs/norms_cor_norm_MSE_nodropout/train')
+# writerval = SummaryWriter('runs/norms_cor_norm_MSE_nodropout/val')
 
 
 '''------------------------------------defining utility functions-------------------------------------'''
@@ -176,7 +178,7 @@ def train_pcpnet(opt):
     # create train and test dataset loaders
     # pdb.set_trace()
     train_dataset = PointcloudPatchDataset(
-        task = 'mse_6_4params_no_normal_pos',
+        task = 'mse_params_dists',
         root=opt.indir,
         shape_list_filename=opt.trainset,
         patch_radius=opt.patch_radius,
@@ -211,7 +213,7 @@ def train_pcpnet(opt):
         break
     
     test_dataset = PointcloudPatchDataset(
-        task = 'mse_6_4params_no_normal_pos',
+        task = 'mse_params_dists',
         root=opt.indir,
         shape_list_filename=opt.testset,
         patch_radius=opt.patch_radius,
@@ -241,6 +243,16 @@ def train_pcpnet(opt):
     # device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     print("device: ", device)
     model = model.to(device)
+
+    with open(f'{save_dir}/model_summary.txt', 'w') as f:
+        original_stdout = sys.stdout  # Save a reference to the original standard output
+        sys.stdout = f  # Change the standard output to the file we created.
+        inp1 = torch.rand(1, 6, 12, 26).to(device)
+        inp2 = torch.rand(1,3).to(device)
+        summary(model, [inp1.shape, inp2.shape])
+        sys.stdout = original_stdout
+    summary(model, [inp1.shape, inp2.shape])
+
     # if torch.cuda.device_count() > 1:
     #     print("Let's use", torch.cuda.device_count(), "GPUs!")
     #     model = nn.DataParallel(model)
@@ -255,7 +267,7 @@ def train_pcpnet(opt):
                 init_i.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
                 init_i.xavier_normal_(m.weight)
-                if m.bias is not None: 
+                if m.bias is not None:
                     init_i.constant_(m.bias, 0)
 
     initialize_weights(model)
@@ -301,15 +313,19 @@ def train_pcpnet(opt):
             optimizer.step()
 
             tolerance = 1e-6  # Define a small tolerance value
-            for name, p in model.named_parameters():
-                diff = torch.abs(prev_param_values[name] - p.detach())
-                max_diff = torch.max(diff)
-                if max_diff <= tolerance:
-                    print(f"{name} is not updating significantly (max diff: {max_diff.item()})")
-            # for name, parameter in model.named_parameters():
-            #     if parameter.grad is not None:
-            #         grad_norm = parameter.grad.norm(2)
-            #         print(f"{name}: gradient norm = {grad_norm}")
+            # for name, p in model.named_parameters():
+            #     diff = torch.abs(prev_param_values[name] - p.detach())
+            #     max_diff = torch.max(diff)
+            #     if max_diff <= tolerance:
+            #         print(f"{name} is not updating significantly (max diff: {max_diff.item()})")
+            for name, parameter in model.named_parameters():
+                if parameter.grad is not None:
+                    grad_norm = parameter.grad.norm(2)
+                    if math.isnan(grad_norm) or math.isinf(grad_norm):
+                        print(f"{name}: gradient contains NaN or inf values")
+                    elif grad_norm < tolerance:
+                        print(f"{name}: gradient norm is below tolerance ({grad_norm})")
+                    # print(f"{name}: gradient norm = {grad_norm}")
             if torch.isnan(data).any() or torch.isinf(data).any():
                 print("Data contains NaN or inf values")
                 break
@@ -329,8 +345,8 @@ def train_pcpnet(opt):
         tot_train_rms = np.mean(train_rms)
         tr_rms_per_epoch.append(tot_train_rms)
 
-        writer.add_scalar('train loss',tot_train_loss, epoch)
-        writer.add_scalar('train rms',tot_train_rms, epoch)
+        # writer.add_scalar('train loss',tot_train_loss, epoch)
+        # writer.add_scalar('train rms',tot_train_rms, epoch)
 
         bef_lr = optimizer.param_groups[0]['lr']
         scheduler.step(tot_train_loss)
@@ -363,8 +379,8 @@ def train_pcpnet(opt):
         tot_val_rms = np.mean(val_rms)
         val_rms_per_epoch.append(tot_val_rms)
 
-        writerval.add_scalar('val loss',tot_val_loss, epoch)
-        writerval.add_scalar('val rms',tot_val_rms, epoch)
+        # writerval.add_scalar('val loss',tot_val_loss, epoch)
+        # writerval.add_scalar('val rms',tot_val_rms, epoch)
 
         if epoch % 10 == 0:
             EPOCH = epoch
@@ -381,7 +397,7 @@ def train_pcpnet(opt):
                         'train_losses_so_far' : tr_loss_per_epoch,
                         'val_rms_so_far' : val_rms_per_epoch,
                         'train_rms_so_far' : tr_rms_per_epoch,
-                        'lr' : optimizer.param_groups[0]['lr'] 
+                        'lr' : optimizer.param_groups[0]['lr']
                         }, PATH)
             print("Model saved at epoch: ", epoch)
 
