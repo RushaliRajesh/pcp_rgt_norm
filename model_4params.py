@@ -322,6 +322,47 @@ class CNN_spiral(nn.Module):
         return x
     
 
+class CNN_3d(nn.Module):
+    def __init__(self):
+        super(CNN_3d, self).__init__()
+        self.conv1 = nn.Conv3d(in_channels=1, out_channels=32, kernel_size=(3,3,3), stride=1)
+        self.conv2 = nn.Conv3d(32, 64, (3,3,1), (1,1,1))
+        self.flat = nn.Flatten()
+        self.fc1 = nn.Linear(9920, 64)
+        self.fc2 = nn.Linear(64, 32)
+        self.fc3 = nn.Linear(32, 4)
+
+        self.init_fc1 = nn.Linear(3, 32)
+        self.init_fc2 = nn.Linear(32, 64)
+
+        self.act = nn.ReLU()
+
+    def forward(self, patches, init):
+            
+        x = self.act((self.conv1(patches)))
+        # print(x.shape)
+        x = self.act((self.conv2(x)))
+        # print(x.shape)
+        x = self.flat(x)
+        # print(x.shape)
+        x_in = self.act(self.init_fc1(init))
+        # print(x_in.shape)
+        x_in = self.act(self.init_fc2(x_in))
+        # print(x_in.shape)
+        x = torch.cat((x, x_in), dim=-1)
+        # print(x.shape)
+        x = self.act(self.fc1(x))
+        # print(x.shape)
+        x = self.act(self.fc2(x))
+        # print(x.shape)
+        x = self.fc3(x)
+        # print(x.shape)
+        x = torch.tanh(x)
+        # print(x.shape)
+        
+        return x
+    
+
 class mlp (nn.Module):
     def __init__(self):
         super(mlp,self).__init__()
@@ -355,7 +396,11 @@ if __name__ == '__main__':
     # dumm_norm = torch.rand(4,3)
     # model = CNN_pos()
     # out = model(dumm, dumm_norm)
-    model = CNN_spiral()
-    out = model(dumm, dumm_norm)
+    # model = CNN_spiral()
+    # out = model(dumm, dumm_norm)
+    inp3d = torch.rand(4,1,11,26,3)
+    inp3d_norm = torch.rand(4,3)
+    model = CNN_3d()
+    out = model(inp3d, inp3d_norm)
     print(out.shape)
 

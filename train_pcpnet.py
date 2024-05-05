@@ -303,7 +303,8 @@ def train_pcpnet(opt):
     
     
 #     model = CNN()
-#     device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    print("device: ", device)
 #     print("device: ", device)
 #     model = model.to(device)
 #     # if torch.cuda.device_count() > 1:

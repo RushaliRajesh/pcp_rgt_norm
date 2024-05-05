@@ -205,9 +205,9 @@ class Cache():
 class PointcloudPatchDataset(data.Dataset):
 
     # patch radius as fraction of the bounding box diagonal of a shape
-    def __init__(self, task, root, shape_list_filename, patch_radius, points_per_patch, patch_features,
-                 seed=None, identical_epochs=False, use_pca=True, center='point', point_tuple=1, 
-                 cache_capacity=1, point_count_std=0.0, sparse_patches=False, single_closest = False):
+    def __init__(self, task, root, shape_list_filename, patch_radius, points_per_patch, patch_features, seed=None, identical_epochs=False, 
+                 use_pca=True, center='point', point_tuple=1, cache_capacity=1, point_count_std=0.0, sparse_patches=False, 
+                 single_closest = False, clusters_total=10, noisy_pts = 25):
 
         # initialize parameters
         self.task = task
@@ -224,6 +224,8 @@ class PointcloudPatchDataset(data.Dataset):
         self.point_count_std = point_count_std
         self.seed = seed
         self.single_closest = single_closest
+        self.clusters_total = clusters_total
+        self.noisy_pts = noisy_pts
 
         self.include_normals = False
         self.include_curvatures = False
@@ -347,14 +349,16 @@ class PointcloudPatchDataset(data.Dataset):
         norms = torch.from_numpy(init_norms)
         closest_ind = torch.argmin(torch.linalg.norm(local_patch - center_point, dim=1))
         closest = local_patch[closest_ind]  
-        
+        # print("bef unique labels: ", torch.unique(labels, dim=0, return_counts=True))
+        local_patch = torch.cat((local_patch[:closest_ind], local_patch[closest_ind+1:]), dim=0)
+        labels = torch.cat((labels[:closest_ind], labels[closest_ind+1:]), dim=0)
         mat = []
-        print("unique labels: ", torch.unique(labels, dim=0))
+        # print("aft unique labels: ", torch.unique(labels, dim=0, return_counts=True))
         for clus in torch.unique(labels, dim=0):
             ind_clus = torch.where(labels==clus)[0]
             coords = local_patch[ind_clus]
-            if(coords.shape[0] < 25):
-                for _ in range(25-(coords.shape[0])):
+            if(coords.shape[0] < self.noisy_pts-1):
+                for _ in range((self.noisy_pts-1)-(coords.shape[0])):
                     a, b = torch.randint(0, coords.shape[0], (2,))
                     # a_n, b_n = torch.divide(a, (a+b)), torch.divide(b, (a+b))
                     a_n = torch.rand(1)
@@ -362,12 +366,12 @@ class PointcloudPatchDataset(data.Dataset):
                     rnd_pt = torch.add(torch.multiply(a_n, coords[a]), torch.multiply(b_n, coords[b])).unsqueeze(0)
                     coords = torch.cat((coords, rnd_pt), dim=0)
             else:
-                coords = coords[:25]
+                coords = coords[:(self.noisy_pts-1)]
 
-            if(clus == 0):
-                local_patch = torch.cat((local_patch[:closest_ind], local_patch[closest_ind+1:]), dim=0)
-                labels = torch.cat((labels[:closest_ind], labels[closest_ind+1:]), dim=0)
-                coords = torch.cat((coords[:closest_ind], coords[closest_ind+1:]), dim=0)
+            # if(clus == 0):
+            #     local_patch = torch.cat((local_patch[:closest_ind], local_patch[closest_ind+1:]), dim=0)
+            #     labels = torch.cat((labels[:closest_ind], labels[closest_ind+1:]), dim=0)
+            #     coords = torch.cat((coords[:closest_ind], coords[closest_ind+1:]), dim=0)
 
             vec2 = torch.subtract(center_point, coords)
             # closest_ind = torch.argmin(torch.linalg.norm(vec2, dim=1))
@@ -406,8 +410,8 @@ class PointcloudPatchDataset(data.Dataset):
         for clus in torch.unique(labels, dim=0):
             ind_clus = torch.where(labels==clus)[0]
             coords = local_patch[ind_clus]
-            if(coords.shape[0] < 25):
-                for _ in range(25-(coords.shape[0])):
+            if(coords.shape[0] < self.noisy_pts):
+                for _ in range(self.noisy_pts-(coords.shape[0])):
                     a, b = torch.randint(0, coords.shape[0], (2,))
                     # a_n, b_n = torch.divide(a, (a+b)), torch.divide(b, (a+b))
                     a_n = torch.rand(1)
@@ -415,7 +419,7 @@ class PointcloudPatchDataset(data.Dataset):
                     rnd_pt = torch.add(torch.multiply(a_n, coords[a]), torch.multiply(b_n, coords[b])).unsqueeze(0)
                     coords = torch.cat((coords, rnd_pt), dim=0)
             else:
-                coords = coords[:25]
+                coords = coords[:self.noisy_pts]
 
             vec2 = torch.subtract(center_point, coords)
             closest_ind = torch.argmin(torch.linalg.norm(vec2, dim=1))
@@ -447,7 +451,7 @@ class PointcloudPatchDataset(data.Dataset):
         # norm_diff = norm_diff.reshape(np_mat.shape[0], np_mat.shape[1], 3)
         # final_mat = np.concatenate((norm_pts, norm_diff, np_mat[:, :, 6:9]), axis=2)
         # vis_mat here if needed
-        # self.vis_mat(norm_diff, center_point-center_point, "my_norm")
+        # self.vis_mat(np_mat[:,:,:3], center_point-center_point, "rev_mat")
         # check = np_mat[:, :, 3:6]
         # self.vis_mat(check, center_point, "my_ori")
         # pdb.set_trace()
@@ -488,6 +492,27 @@ class PointcloudPatchDataset(data.Dataset):
         plt.savefig(save_name)
         # plt.show()
 
+    
+    def vis_mat_exp(self, mat, file_name):
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        s = mat.shape[0]
+        for i in range(self.clusters_total-1):
+            # print(i)
+            values = np.concatenate((mat[i,i:s-i-1,:], mat[i:s-i-1,s-i-1,:], 
+                                    mat[s-i-1,i+1:s-i,:], mat[i+1:s-i,i,:]), axis = 0)
+            print(values.shape)
+            ax.scatter(values[:,0], values[:,1], values[:,2], label = f'ring {i+1}')
+            # ax.scatter(i[:,0], i[:,1], i[:,2], label = f'ring {ind+1}')
+        ax.set_title("verifying rings from patches")
+        ax.legend()
+        print("in vis_mat_exp")
+        save_name = file_name + ".png"
+        plt.savefig(save_name)
+        # plt.show()
+
 
     def __getitem__(self, index):
         shape_ind, patch_ind = self.shape_index(index)
@@ -502,19 +527,30 @@ class PointcloudPatchDataset(data.Dataset):
         patch_pts_valid = []
         scale_ind_range = np.zeros([len(self.patch_radius_absolute[shape_ind]), 2], dtype='int')
         for s, rad in enumerate(self.patch_radius_absolute[shape_ind]):
-            neighs_dists = shape.neighs_dists[center_point_ind,1:]
-            neighs_inds = shape.neighs_inds[center_point_ind,1:]
-            kmeans = KMeans(n_clusters=10).fit(neighs_dists.reshape(-1,1))
+            neighs_dists = shape.neighs_dists[center_point_ind,:]
+            neighs_inds = shape.neighs_inds[center_point_ind,:]
+            asc_ind = np.argsort(neighs_dists)
+            neighs_dists = neighs_dists[asc_ind]
+            neighs_inds = neighs_inds[asc_ind]
+            neighs_dists = neighs_dists[1:]
+            neighs_inds = neighs_inds[1:]
+            kmeans = KMeans(n_clusters=self.clusters_total).fit(neighs_dists.reshape(-1,1))
             patch_ring_inds = kmeans.labels_
             local_patch = shape.pts[neighs_inds]
+            diff = np.diff(patch_ring_inds, prepend=patch_ring_inds[0])
+            change_indices = np.nonzero(diff)[0]
+            nw_l = np.zeros_like(patch_ring_inds)
+            nw_l[change_indices] = 1
+            nw_l = np.cumsum(nw_l)
+            final_labels = np.where(nw_l >= 1, nw_l - 1, nw_l)
+            # pdb.set_trace()
             # self.vis(local_patch, patch_ring_inds, shape.pts[center_point_ind])
             if self.single_closest == True:
-                mat = self.process_all_single_closest(patch_ring_inds, center_point_ind, local_patch, neighs_inds, shape.pts[center_point_ind],shape.init)
+                mat = self.process_all_single_closest(final_labels, center_point_ind, local_patch, neighs_inds, shape.pts[center_point_ind],shape.init)
             else: 
-                mat = self.process_all(patch_ring_inds, center_point_ind, local_patch, neighs_inds, shape.pts[center_point_ind],shape.init)
-
+                mat = self.process_all(final_labels, center_point_ind, local_patch, neighs_inds, shape.pts[center_point_ind],shape.init)
+            # print(mat.shape)
         # mat = torch.from_numpy(mat)
-
         # self.vis_mat(mat,shape.pts[center_point_ind])
         
         if (self.task == 'direct_pos_6_dim'):
@@ -594,7 +630,7 @@ class PointcloudPatchDataset(data.Dataset):
             # print("mat aft: ", mat.shape)
             # what all to return from mat?
             # mat = mat[:,:,3:9]
-            mat = torch.from_numpy(mat)
+            mat = torch.from_numpy(mat) 
             # mat_sub2 = self.encode_position(mat[:,:,3:6], 5)
             # mat = torch.cat((mat_sub1, mat_sub2), dim=2)
             # pdb.set_trace()
@@ -617,6 +653,38 @@ class PointcloudPatchDataset(data.Dataset):
             # pdb.set_trace()
             return mat, shape.init[center_point_ind, :], params, shape.normals[center_point_ind, :]
         
+        elif (self.task == 'spiral_mat_nodists'):
+            mat = mat[:,:,:3]
+            center_ext = shape.pts[center_point_ind].reshape(1,1,3)
+            for i in range(1,mat.shape[0]+1):
+                num = (2*i+1)**2 - (2*(i-1)+1)**2
+                ring = mat[mat.shape[0]-i][:num][:]
+                exp_mat = np.zeros((2*i+1,2*i+1,3))
+                exp_mat[1:-1,1:-1,:] = center_ext
+                seg_num = int(num/4)
+                exp_mat[0,0:-1,:] = ring[:seg_num,:]
+                exp_mat[0:-1,-1,:] = ring[seg_num:2*seg_num,:]
+                exp_mat[-1,-1:0:-1,:] = ring[2*seg_num:3*seg_num,:]
+                exp_mat[-1:0:-1,0,:] = ring[3*seg_num:4*seg_num,:]
+                center_ext = exp_mat
+            # pdb.set_trace()
+
+            params = self.get_params(shape.init[center_point_ind, :], shape.normals[center_point_ind, :])
+            return center_ext, shape.init[center_point_ind, :], params, shape.normals[center_point_ind, :]
+        
+        elif (self.task == 'fft'):
+            mat = mat[:,:,:3]
+            mat = np.concatenate([mat, mat[:2, :, :]], axis=0)
+            mat = np.concatenate([mat, mat[:, :2, :]], axis=1)
+            from scipy.fftpack import fft
+            fft_x = fft(mat[:,:,0])
+            fft_y = fft(mat[:,:,1])
+            fft_z = fft(mat[:,:,2])
+            fft_mat = np.stack([fft_x, fft_y, fft_z], axis=-1)
+            # pdb.set_trace()
+            params = self.get_params(shape.init[center_point_ind, :], shape.normals[center_point_ind, :])
+            return fft_mat, shape.init[center_point_ind, :], params, shape.normals[center_point_ind, :]
+
         return False
 
 
